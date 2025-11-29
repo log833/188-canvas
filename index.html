@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>188 Canvas</title>
+  <style>
+    :root{--toolbar-height:64px;--bg:#f3f4f6}
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial}
+    body{display:flex;flex-direction:column;background:var(--bg)}
+    .toolbar{height:var(--toolbar-height);display:flex;align-items:center;gap:12px;padding:8px 12px;background:white;box-shadow:0 2px 6px rgba(0,0,0,.06)}
+    .toolbar .group{display:flex;align-items:center;gap:8px}
+    .btn{background:#111827;color:white;border:none;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:600}
+    .btn.secondary{background:transparent;color:#111827;border:1px solid #e5e7eb}
+    label{font-size:13px;color:#374151}
+    input[type=range]{width:120px}
+    #canvas-wrap{flex:1;display:flex}
+    canvas{flex:1;border-top:1px solid #e6e6e6;background:white;display:block;touch-action: none}
+    .small{font-size:12px;padding:6px 8px}
+    .hint{font-size:12px;color:#6b7280}
+    @media (max-width:600px){.toolbar{gap:8px;padding:6px}.btn{padding:6px 8px}}
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div class="group">
+      <label for="color">Color</label>
+      <input id="color" type="color" value="#111111">
+    </div>
+
+    <div class="group">
+      <label for="size">Brush</label>
+      <input id="size" type="range" min="1" max="80" value="6">
+      <span id="size-val" class="hint">6</span>
+    </div>
+
+    <div class="group">
+      <button id="mode" class="btn secondary small">Mode: Draw</button>
+      <button id="undo" class="btn small">Undo</button>
+      <button id="clear" class="btn small">Clear</button>
+    </div>
+
+    <div class="group" style="margin-left:auto">
+      <button id="save" class="btn small">Save PNG</button>
+      <button id="fit" class="btn secondary small">Fit to Window</button>
+    </div>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="c"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d', {alpha: false});
+    const colorEl = document.getElementById('color');
+    const sizeEl = document.getElementById('size');
+    const sizeVal = document.getElementById('size-val');
+    const modeBtn = document.getElementById('mode');
+    const undoBtn = document.getElementById('undo');
+    const clearBtn = document.getElementById('clear');
+    const saveBtn = document.getElementById('save');
+    const fitBtn = document.getElementById('fit');
+
+    let drawing = false;
+    let last = {x:0,y:0};
+    let mode = 'draw'; // or 'erase'
+    let dpi = window.devicePixelRatio || 1;
+
+    // undo stack using ImageData snapshots
+    const undoStack = [];
+    const MAX_UNDO = 12;
+
+    function setCanvasSize(){
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(Math.floor(rect.width), 100);
+      const h = Math.max(Math.floor(rect.height), 100);
+      canvas.width = Math.floor(w * dpi);
+      canvas.height = Math.floor(h * dpi);
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      ctx.scale(dpi, dpi);
+      // when resizing, preserve existing content by redrawing from last snapshot if any
+      if(undoStack.length){
+        const img = new Image();
+        img.src = undoStack[undoStack.length-1];
+        img.onload = () => ctx.drawImage(img,0,0, canvas.width/dpi, canvas.height/dpi);
+      } else {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0,0, canvas.width/dpi, canvas.height/dpi);
+      }
+      setBrush();
+    }
+
+    // initialize size to fit window
+    function fitToWindow(){
+      const wrap = document.getElementById('canvas-wrap');
+      // make canvas fill remaining space (toolbar height is fixed)
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      setCanvasSize();
+    }
+
+    function pushUndo(){
+      try{
+        const dataUrl = canvas.toDataURL('image/png');
+        undoStack.push(dataUrl);
+        if(undoStack.length > MAX_UNDO) undoStack.shift();
+        undoBtn.disabled = false;
+      } catch(e){
+        // ignore
+      }
+    }
+
+    function undo(){
+      if(!undoStack.length) return;
+      // remove current snapshot
+      undoStack.pop();
+      const lastUrl = undoStack[undoStack.length-1];
+      if(lastUrl){
+        const img = new Image();
+        img.src = lastUrl;
+        img.onload = () => {
+          ctx.clearRect(0,0, canvas.width/dpi, canvas.height/dpi);
+          ctx.drawImage(img,0,0, canvas.width/dpi, canvas.height/dpi);
+        };
+      } else {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0,0, canvas.width/dpi, canvas.height/dpi);
+      }
+      if(undoStack.length === 0) undoBtn.disabled = true;
+    }
+
+    function setBrush(){
+      const size = Number(sizeEl.value);
+      sizeVal.textContent = size;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = size;
+      if(mode === 'erase') ctx.globalCompositeOperation = 'destination-out';
+      else ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = colorEl.value;
+    }
+
+    function start(x,y){
+      drawing = true;
+      last = {x,y};
+      ctx.beginPath();
+      ctx.moveTo(x,y);
+      // push snapshot before the stroke so undo returns to prior state
+      pushUndo();
+    }
+
+    function drawTo(x,y){
+      if(!drawing) return;
+      ctx.lineTo(x,y);
+      ctx.stroke();
+      last = {x,y};
+    }
+
+    function stop(){
+      if(!drawing) return;
+      drawing = false;
+      ctx.closePath();
+    }
+
+    // pointer events (works for mouse + touch)
+    canvas.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      canvas.setPointerCapture(e.pointerId);
+      const r = canvas.getBoundingClientRect();
+      const x = (e.clientX - r.left);
+      const y = (e.clientY - r.top);
+      setBrush();
+      start(x,y);
+    });
+
+    canvas.addEventListener('pointermove', e => {
+      if(!drawing) return;
+      const r = canvas.getBoundingClientRect();
+      const x = (e.clientX - r.left);
+      const y = (e.clientY - r.top);
+      drawTo(x,y);
+    });
+
+    canvas.addEventListener('pointerup', e => {
+      stop();
+      try{canvas.releasePointerCapture(e.pointerId);}catch(e){}
+    });
+
+    // toolbar actions
+    colorEl.addEventListener('input', ()=> setBrush());
+    sizeEl.addEventListener('input', ()=> setBrush());
+
+    modeBtn.addEventListener('click', ()=>{
+      mode = mode === 'draw' ? 'erase' : 'draw';
+      modeBtn.textContent = mode === 'draw' ? 'Mode: Draw' : 'Mode: Erase';
+      setBrush();
+    });
+
+    clearBtn.addEventListener('click', ()=>{
+      pushUndo();
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0,0, canvas.width/dpi, canvas.height/dpi);
+    });
+
+    undoBtn.addEventListener('click', ()=> undo());
+
+    saveBtn.addEventListener('click', ()=>{
+      // create a temporary link
+      const data = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = data;
+      a.download = 'drawing.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+
+    fitBtn.addEventListener('click', ()=>{
+      fitToWindow();
+    });
+
+    // keyboard shortcuts: Z = undo (with ctrl/cmd), C = clear, S = save
+    window.addEventListener('keydown', e => {
+      if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='z'){ e.preventDefault(); undo(); }
+      if(e.key.toLowerCase()==='c' && !(e.ctrlKey||e.metaKey)){ e.preventDefault(); pushUndo(); ctx.fillStyle = '#fff'; ctx.fillRect(0,0, canvas.width/dpi, canvas.height/dpi);} // C clears
+      if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='s'){ e.preventDefault(); saveBtn.click(); }
+    });
+
+    // responsive resize
+    let resizeTimer;
+    window.addEventListener('resize', ()=>{
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(()=>{
+        // store snapshot and resize
+        const snapshot = canvas.toDataURL('image/png');
+        if(snapshot) {
+          // keep it as current snapshot so content persists
+          if(!undoStack.length) undoStack.push(snapshot);
+          else undoStack[undoStack.length-1] = snapshot;
+        }
+        setCanvasSize();
+      }, 120);
+    });
+
+    // initial setup
+    fitToWindow();
+
+    // initial blank snapshot to enable undo to clear back to blank
+    pushUndo();
+    undoBtn.disabled = true;
+  </script>
+</body>
+</html>
